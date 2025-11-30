@@ -178,7 +178,7 @@ proj_adk_agent/
 
 🔧 Configuration
 bash
-# .env (optional)
+### .env (optional)
 EBIRD_API_KEY=YOUR_API_KEY
 GOOGLE_GENAI_API_KEY=your-key  # Auto-detected
 
