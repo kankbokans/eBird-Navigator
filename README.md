@@ -137,10 +137,10 @@ Get eBird taxonomy forms for a specific species.
  🚀 Quick Start
 Prerequisites
 powershell
-# 1. Python 3.10+ + Node.js 18+
-# 2. Google AI Studio API key (auto-configured)
+### 1. Python 3.10+ + Node.js 18+
+### 2. Google AI Studio API key (auto-configured)
 
-# 3. Clone & Install
+### 3. Clone & Install
 git clone https://github.com/YOUR_USERNAME/ebird-birding-agent.git
 cd ebird-birding-agent/proj_adk_agent
 pip install -r requirements.txt  # or pip install google-adk
