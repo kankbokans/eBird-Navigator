@@ -43,6 +43,7 @@ if not EBIRD_FOLDER.exists():
 
 # --- GLOBAL AGENTS (Required for adk web) ---
 logger.info("Creating eBird MCP toolset...")
+#Custom Tool-MCP
 ebird_toolset = McpToolset(
     connection_params=StdioConnectionParams(
         server_params=StdioServerParameters(
@@ -53,6 +54,7 @@ ebird_toolset = McpToolset(
     ),
 )
 
+#In-Built Tool
 city_species_locator_agent = LlmAgent(
     model="gemini-2.5-flash-lite",
     name="city_species_agent",
@@ -86,6 +88,7 @@ ebird_agent = LlmAgent(
     tools=[ebird_toolset],
     
 )
+#Multi-Agent System
 
 # ✅ GLOBAL ROOT_AGENT - REQUIRED for adk web
 root_agent = LlmAgent(
@@ -161,4 +164,5 @@ if __name__ == "__main__":
     print("🌐 Web UI: 'adk web'  → http://127.0.0.1:8000")
     print("🧪 Tests:  'python agent.py'")
     print("-" * 50)
+
     asyncio.run(main())
