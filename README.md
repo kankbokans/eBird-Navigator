@@ -1,4 +1,4 @@
-# eBird Navigator
+## eBird Navigator
 Multi-agent birding assistant that automatically finds birding hotspots, recent observations, and top species lists for any location worldwide using Google ADK, Gemini 2.5, Google Search, and eBird MCP tools.
 
 🎯 Features
