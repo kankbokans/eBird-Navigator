@@ -18,7 +18,7 @@ from google.adk.tools.mcp_tool.mcp_toolset import (
     StdioServerParameters,
 )
 
-# --- FIXED: Unicode-safe + GenAI warning suppression ---
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -29,10 +29,17 @@ logging.basicConfig(
     force=True
 )
 
-# ✅ Suppress known GenAI async client bug
+# Suppress known GenAI async client bug
 logging.getLogger("google.genai").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+# PROJECT_ROOT: directory containing this agent.py file. This makes the code
+# portable (no hard-coded absolute paths).
+# EBIRD_FOLDER: relative path where the MCP eBird server (Node.js project) lives.
+# EBIRD_API_KEY:
+# - Pulled from environment for security.
+# - Fallback "YOUR_EBIRD_API_KEY" is a placeholder for local testing;
 
 PROJECT_ROOT = Path(__file__).parent.absolute()
 EBIRD_FOLDER = PROJECT_ROOT / "ebird-mcp-server"
@@ -41,7 +48,13 @@ EBIRD_API_KEY = os.getenv("EBIRD_API_KEY", "YOUR_EBIRD_API_KEY")
 if not EBIRD_FOLDER.exists():
     raise FileNotFoundError(f"eBird MCP server folder not found: {EBIRD_FOLDER}")
 
-# --- GLOBAL AGENTS (Required for adk web) ---
+# MCP Toolset: expose eBird MCP tools to ADK as regular tools
+# -----------------------------------------------------------------------------
+# McpToolset connects to an MCP server (the Node.js eBird server) via stdio.
+# ADK will:
+# - Discover the tools exposed by that server.
+# - Wrap them as normal ADK tools that LlmAgent can call.
+
 logger.info("Creating eBird MCP toolset...")
 #Custom Tool-MCP
 ebird_toolset = McpToolset(
@@ -55,10 +68,22 @@ ebird_toolset = McpToolset(
 )
 
 #In-Built Tool
+# Agent 1: city_species_locator_agent
+# - Role: "backend search specialist" using Google Search tools.
+# - Responsibilities:
+#     * Resolve locations to lat/lon (city, state, country, landmark).
+#     * Resolve species names / taxonomy basics via web search.
+# - Design: Treated as a sub-agent / helper, not the main UX agent.
+
 city_species_locator_agent = LlmAgent(
     model="gemini-2.5-flash-lite",
     name="city_species_agent",
     description="Location and species lookup using Google Search.",
+    # instruction:
+    #   This prompt tightly scopes the agent so the model focuses on:
+    #   - Geocoding (turning user text into coordinates).
+    #   - Species name / taxonomy lookups.
+    #   It is intentionally procedural and precise, to improve reliability.
     instruction=(
         "You specialize in finding latitude/longitude for cities,states,countries, locations, or landmarks. "
         "Use Google Search to find coordinates for ANY location mentioned. "
@@ -71,8 +96,21 @@ city_species_locator_agent = LlmAgent(
 
     ),
     tools=[google_search],
+    # Note: This agent's response is primarily consumed by the root_agent
+    # and ebird_agent, not directly shown to the user.
+    # tools:
+    #   We give this agent only the Google Search tool so its behavior remains
+    #   focused: all external data comes from search, not MCP.
 )
 
+# Agent 2: ebird_agent
+# - Role: "eBird data specialist" using MCP tools only.
+# - Responsibilities:
+#     * Given coordinates or species, call the eBird MCP tools to:
+#         - list hotspots
+#         - fetch recent observations
+#         - query taxonomy data
+#     * Optionally fall back to general info via city_species_locator_agent (by instruction).
 ebird_agent = LlmAgent(
     model="gemini-2.5-flash-lite",
     name="ebird_agent",
@@ -86,17 +124,32 @@ ebird_agent = LlmAgent(
         "If you do not find any answers from the ebird tool, find the best answer by using the city_species_locator_agent to get information about the species and give some information in 4-5 lines about the species that is being asked"
     ),
     tools=[ebird_toolset],
+    #   This agent only sees the eBird MCP tools, which keeps responsibilities
+    #   clean: all heavy bird-data logic is delegated here.
     
 )
 #Multi-Agent System
+# Agent 3: root_agent
+# - Role: Main "assistant" agent.
+# - Responsibilities:
+#     * Interpret user questions.
+#     * Decide when/how to delegate work to:
+#         - city_species_locator_agent
+#         - ebird_agent
+#     * Compose a user-friendly final answer.
+#
+# - Design:
+#     * Implemented as an LlmAgent with AgentTool entries for the two specialists.
+#     * This makes them callable tools from the root agent's perspective.
+#     * ADK web expects a global `root_agent` symbol, so this name is important.
 
-# ✅ GLOBAL ROOT_AGENT - REQUIRED for adk web
+
 root_agent = LlmAgent(
     model="gemini-2.5-flash-lite",
     name="root_agent",
     description="Professional birding assistant with auto-orchestration.",
     instruction=(
-           "You are a kind, helpful and professional birding assistant. For birding/hotspot questions:\n"
+           "You are a kind, helpful and professional birding assistant. For birding/hotspot questions:\n" 
         "1. If the user mentions a SPECIFIC CITY/PLACE, use the city_species_locator_agent "
            "to get lat/long, then pass those coordinates to ebird_agent.\n"
         "2. If the user mentions a SPECIFIC SPECIES/BIRD, use the city_species_locator_agent "
@@ -109,9 +162,22 @@ root_agent = LlmAgent(
         "6. Always provide answer in the form of a list of 15 most relevant bird species that can be found at the location or 10-15 hotspots asked based on the data from ebird_agent."
     ),
     tools=[AgentTool(agent=city_species_locator_agent), AgentTool(agent=ebird_agent)],
+    #   We wrap the two sub-agents in AgentTool so the root_agent can invoke
+    #   them like tools. ADK handles passing our user/session context to them.
 )
     
 logger.info("✅ All 3 agents ready")
+
+# BirdingAgentService
+# - Thin service layer to:
+#     * Own the InMemorySessionService (ephemeral, in-process sessions).
+#     * Own a Runner configured with the root_agent.
+#     * Provide an async `run_query` method usable from CLI/tests.
+#
+# - Design:
+#     * This isolates ADK wiring from UI / CLI code.
+#     * In production, you could swap InMemorySessionService with a persistent
+#       implementation without changing calling code. 
 
 class BirdingAgentService:
     def __init__(self):
@@ -120,16 +186,31 @@ class BirdingAgentService:
             app_name="birding_app",
             agent=root_agent,
             session_service=self.session_service,
+        # Runner is the main ADK orchestrator:
+        # - Binds the root_agent to an app_name.
+        # - Uses session_service to keep track of multi-turn context.
         )
     
     async def run_query(self, query: str) -> str:
+        """
+        Execute a single user query through the root agent.
+
+        Implementation details:
+        - Creates a fresh session for each call (stateless between runs).
+        - Wraps the user query in google.genai.types.Content.
+        - Streams events from Runner.run_async and accumulates the final text.
+        """
         try:
             session = await self.session_service.create_session(
                 state={}, app_name="birding_app", user_id="test"
             )
+            # Wrap the plain text query into a GenAI Content object
+            # (role=user, with a single text Part)
             content = genai_types.Content(role="user", parts=[genai_types.Part(text=query)])
                         
             response = ""
+            # run_async streams intermediate and final events.
+            # We accumulate only the final response text from the agent
             async for event in self.root_runner.run_async(
                 session_id=session.id, user_id="test", new_message=content
             ):
@@ -144,7 +225,8 @@ class BirdingAgentService:
             logger.error(f"Query failed: {e}")
             return f"Error: {str(e)}"
 
-
+# Simple programmatic test harness
+# - This block runs only when executing `python agent.py` directly.
 async def main():
     """Test programmatic execution"""
     service = BirdingAgentService()
@@ -160,9 +242,11 @@ async def main():
         await asyncio.sleep(1)
 
 if __name__ == "__main__":
+    # When run as a script, print quick usage hints and execute the demo queries.
     print("🎉 Birding Agent READY!")
     print("🌐 Web UI: 'adk web'  → http://127.0.0.1:8000")
     print("🧪 Tests:  'python agent.py'")
     print("-" * 50)
 
     asyncio.run(main())
+
